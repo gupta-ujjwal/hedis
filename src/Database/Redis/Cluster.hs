@@ -109,7 +109,7 @@ data Shard = Shard MasterNode [SlaveNode] deriving (Show, Eq, Ord)
 -- A map from hashslot to shards
 newtype ShardMap = ShardMap (IntMap.IntMap Shard) deriving (Show)
 
-newtype MissingNodeException = MissingNodeException [B.ByteString] deriving (Show, Typeable)
+data MissingNodeException = MissingNodeException String [B.ByteString] deriving (Show, Typeable)
 instance Exception MissingNodeException
 
 newtype UnsupportedClusterCommandException = UnsupportedClusterCommandException [B.ByteString] deriving (Show, Typeable)
@@ -287,7 +287,7 @@ retryBatch shardMapVar refreshShardmapAction conn retryCount requests replies =
             let (Connection _ _ _ infoMap _) = conn
             keys <- mconcat <$> mapM (requestKeys infoMap) requests
             hashSlot <- hashSlotForKeys (CrossSlotException requests) keys
-            nodeConn <- nodeConnForHashSlot shardMapVar conn (MissingNodeException (head requests)) hashSlot
+            nodeConn <- nodeConnForHashSlot shardMapVar conn (MissingNodeException "RetryBatch-Error" (head requests)) hashSlot
             requestNode nodeConn requests
         (askingRedirection -> Just (host, port)) -> do
             shardMap <- hasLocked $ readMVar shardMapVar
@@ -298,7 +298,7 @@ retryBatch shardMapVar refreshShardmapAction conn retryCount requests replies =
                     0 -> do
                         _ <- hasLocked $ modifyMVar_ shardMapVar (const refreshShardmapAction)
                         retryBatch shardMapVar refreshShardmapAction conn (retryCount + 1) requests replies
-                    _ -> throwIO $ MissingNodeException (head requests)
+                    _ -> throwIO $ MissingNodeException "RetryBatch-AskingRedirection" (head requests)
         _ -> return replies
 
 -- Like `evaluateOnPipeline`, except we expect to be able to run all commands
@@ -317,7 +317,7 @@ evaluateTransactionPipeline shardMapVar refreshShardmapAction conn requests' = d
     -- the commands in a transaction are applied and some are not. Better to
     -- fail early.
     hashSlot <- hashSlotForKeys (CrossSlotException requests) keys
-    nodeConn <- nodeConnForHashSlot shardMapVar conn (MissingNodeException (head requests)) hashSlot
+    nodeConn <- nodeConnForHashSlot shardMapVar conn (MissingNodeException "evaluateTransactionPipeline" (head requests)) hashSlot
     -- catch the exception thrown, send the command to random node.
     -- This change is required to handle the cluster topology change.
     eresps <- try $ requestNode nodeConn requests
@@ -416,13 +416,13 @@ nodeConnectionForCommand conn@(Connection nodeConns _ _ infoMap _) (ShardMap sha
             keys <- requestKeys infoMap request
             hashSlot <- hashSlotForKeys (CrossSlotException [request]) keys
             node <- case IntMap.lookup (fromEnum hashSlot) shardMap of
-                Nothing -> throwIO $ MissingNodeException request
+                Nothing -> throwIO $ MissingNodeException "nodeConnectionForCommand-NotFoundInHashSlot" request
                 Just (Shard master _) -> return master
-            maybe (throwIO $ MissingNodeException request) (return . return) (HM.lookup (nodeId node) nodeConns)
+            maybe (throwIO $ MissingNodeException "nodeConnectionForCommand-NotFoundInNodeConns" request) (return . return) (HM.lookup (nodeId node) nodeConns)
     where
         allNodes =
             case allMasterNodes conn (ShardMap shardMap) of
-                Nothing -> throwIO $ MissingNodeException request
+                Nothing -> throwIO $ MissingNodeException "nodeConnectionForCommand-NotFoundInShardMap" request
                 Just allNodes' -> return allNodes'
 
 allMasterNodes :: Connection -> ShardMap -> Maybe [NodeConnection]
