@@ -298,7 +298,9 @@ retryBatch shardMapVar refreshShardmapAction conn retryCount requests replies =
                     0 -> do
                         _ <- hasLocked $ modifyMVar_ shardMapVar (const refreshShardmapAction)
                         retryBatch shardMapVar refreshShardmapAction conn (retryCount + 1) requests replies
-                    _ -> throwIO $ MissingNodeException "RetryBatch-AskingRedirection" (head requests)
+                    _ -> do
+                        print $ "hedis:retryBatch RetryCount for host in shardMap - " <> show (host, port) <> show shardMap
+                        throwIO $ MissingNodeException "RetryBatch-AskingRedirection" (head requests)
         _ -> return replies
 
 -- Like `evaluateOnPipeline`, except we expect to be able to run all commands
@@ -362,10 +364,14 @@ nodeConnForHashSlot shardMapVar conn exception hashSlot = do
     (ShardMap shardMap) <- hasLocked $ readMVar shardMapVar
     node <-
         case IntMap.lookup (fromEnum hashSlot) shardMap of
-            Nothing -> throwIO exception
+            Nothing -> do
+                print $ "hedis:nodeConnForHashSlot hashSlot not found in shardMap - " <> show hashSlot <> show shardMap
+                throwIO exception
             Just (Shard master _) -> return master
     case HM.lookup (nodeId node) nodeConns of
-        Nothing -> throwIO exception
+        Nothing -> do 
+            print $ "hedis:nodeConnForHashSlot node not found in connections - " <> show node
+            throwIO exception
         Just nodeConn' -> return nodeConn'
 
 hashSlotForKeys :: Exception e => e -> [B.ByteString] -> IO HashSlot
@@ -416,13 +422,22 @@ nodeConnectionForCommand conn@(Connection nodeConns _ _ infoMap _) (ShardMap sha
             keys <- requestKeys infoMap request
             hashSlot <- hashSlotForKeys (CrossSlotException [request]) keys
             node <- case IntMap.lookup (fromEnum hashSlot) shardMap of
-                Nothing -> throwIO $ MissingNodeException "nodeConnectionForCommand-NotFoundInHashSlot" request
+                Nothing -> do
+                    print $ "hedis:nodeConnectionForCommand hashSlot not found in shardMap - " <> show hashSlot <> show shardMap
+                    throwIO $ MissingNodeException "nodeConnectionForCommand-NotFoundInHashSlot" request
                 Just (Shard master _) -> return master
-            maybe (throwIO $ MissingNodeException "nodeConnectionForCommand-NotFoundInNodeConns" request) (return . return) (HM.lookup (nodeId node) nodeConns)
+            maybe 
+                (do 
+                    print $ "hedis:nodeConnectionForCommand node not found in nodeConns - " <> show node 
+                    throwIO $ MissingNodeException "nodeConnectionForCommand-NotFoundInNodeConns" request) 
+                (return . return) 
+                (HM.lookup (nodeId node) nodeConns)
     where
         allNodes =
             case allMasterNodes conn (ShardMap shardMap) of
-                Nothing -> throwIO $ MissingNodeException "nodeConnectionForCommand-NotFoundInShardMap" request
+                Nothing -> do
+                    print $ "hedis:allNodes master node not found for shardMap - " <> show shardMap
+                    throwIO $ MissingNodeException "nodeConnectionForCommand-NotFoundInShardMap" request
                 Just allNodes' -> return allNodes'
 
 allMasterNodes :: Connection -> ShardMap -> Maybe [NodeConnection]
